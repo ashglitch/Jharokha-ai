@@ -68,7 +68,10 @@ def _net_prob(net, bgr, tta):
     return prob[:h, :w]
 
 
-SCALES = (1.0, 3.0)  # the model is run at several zooms; thin cracks in wide shots only show up when zoomed ~3x
+import os
+TILE = int(os.environ.get('JHAROKHA_TILE', '0') or 0)  # >0 = low-memory mode (small tiles, no flip-averaging)
+USE_TTA = os.environ.get('JHAROKHA_TTA', '1') != '0'
+SCALES = tuple(float(x) for x in __import__('os').environ.get('JHAROKHA_SCALES', '1.0,3.0').split(','))  # the model is run at several zooms; thin cracks in wide shots only show up when zoomed ~3x
 
 
 def _starts(n, tile, step):
@@ -118,7 +121,11 @@ def model_probs(bgr):
 
 
 def _segment_model(bgr, net):
-    prob = multiscale_prob(lambda im, tta: _net_prob(net, im, True) if tta else _net_prob_tiled(net, im), bgr)
+    def run(im, base):
+        if TILE:
+            return _net_prob_tiled(net, im, tile=TILE)
+        return _net_prob(net, im, USE_TTA) if base else _net_prob_tiled(net, im)
+    prob = multiscale_prob(run, bgr)
     mask = prob > _model['thr']
     return _clean(mask, min_len=15, max_thickness=40), float(prob[mask].mean()) if mask.any() else 0.0
 

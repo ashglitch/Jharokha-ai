@@ -1,0 +1,12 @@
+.venv
+.git
+__pycache__
+data
+my_photos
+prelabel
+diagnose_out
+history.json
+static/uploads/*
+static/results/*
+weights/*_backup.pt
+weights/*before_resume.pt

@@ -4,6 +4,7 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 import cv2
 import json
+import os
 import uuid
 from analysis import analyze_image, project_growth
 
@@ -11,13 +12,14 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / 'static' / 'uploads'
 RESULT_DIR = BASE_DIR / 'static' / 'results'
 HISTORY_FILE = BASE_DIR / 'history.json'
+PUBLIC = os.environ.get('JHAROKHA_PUBLIC') == '1'  # online demo: never store or show other people's photos
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'change-this-for-a-real-deployment'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or os.urandom(24).hex()
 app.config['MAX_CONTENT_LENGTH'] = MAX_IMAGE_BYTES
 
 
@@ -26,6 +28,8 @@ def allowed_file(filename):
 
 
 def read_history():
+    if PUBLIC:
+        return []
     if not HISTORY_FILE.exists():
         return []
     try:
@@ -35,6 +39,8 @@ def read_history():
 
 
 def save_history(items):
+    if PUBLIC:
+        return
     HISTORY_FILE.write_text(json.dumps(items[:50], indent=2), encoding='utf-8')
 
 
@@ -136,6 +142,9 @@ def view_result(record_id):
 
 @app.route('/history')
 def history():
+    if PUBLIC:
+        flash('History is turned off in the public demo, so nobody else sees your photos.', 'error')
+        return redirect(url_for('index'))
     return render_template('history.html', records=read_history())
 
 
