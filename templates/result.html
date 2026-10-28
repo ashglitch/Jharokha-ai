@@ -1,0 +1,77 @@
+{% extends 'base.html' %}{% block title %}Screening report{% endblock %}
+{% block content %}
+{% set u = result.unit or 'px' %}
+<section class="report wrap">
+<p class="eyebrow">FIELD REPORT / {{ result.id }} · {{ result.capture_date or result.created_at }}</p>
+<div class="report-head"><div><h1>Look closely.<br><em>Then decide.</em></h1><p class="lede">{{ result.building_label }} · {{ result.surface_type }}</p></div>
+<div class="review-badge"><span class="badge-dot"></span>{% if result.preliminary %}Preliminary result · no trained model{% else %}{{ result.risk_tier }} risk tier · human review recommended{% endif %}</div></div>
+
+{% if result.preliminary %}<div class="chart-card wide" style="border-color:#a84735"><h3>Untrained baseline mode</h3><p class="chart-note" style="margin:0">No trained model is loaded, so this uses a simple line detector. It can mistake carved panel lines, joints and shadows for cracks, and the score, tier and interval are suppressed for that reason. Check the overlay by eye. Train the model (README) for reliable results.</p></div>{% endif %}
+{% if result.hint_lines and result.hint_lines >= 250 %}<div class="chart-card wide" style="border-color:#a84735"><h3>Possible missed cracks</h3><p class="chart-note" style="margin:0">The trained model found no cracks, but a simple line detector found about {{ result.hint_lines }} px of crack-like lines. The model may be missing thin or distant cracks. Look at the photo yourself, and try a closer photo of the area (fill the frame with 1-2 m of wall).</p></div>{% endif %}
+{% if result.hint_lines is defined and not result.crack_found and not result.preliminary and (not result.hint_lines or result.hint_lines < 250) %}<div class="chart-card wide"><h3>No cracks detected</h3><p class="chart-note" style="margin:0">Very thin or distant cracks can still be missed in wide shots. For a real inspection, photograph suspicious areas close up.</p></div>{% endif %}
+{% if not result.preliminary and result.crack_area_pct > 4 %}<div class="chart-card wide" style="border-color:#c9a227"><h3>Check this one</h3><p class="chart-note" style="margin:0">An unusually large share of the image was marked as cracked ({{ result.crack_area_pct }}%). That often means ornament or shadows are being flagged. Review the overlay before trusting the numbers.</p></div>{% endif %}
+<div class="image-grid">
+<figure><img src="{{ url_for('static', filename=result.original_image) }}" alt="Original"><figcaption><span>FIG. 01</span> Original photograph</figcaption></figure>
+<figure><img src="{{ url_for('static', filename=result.overlay_image) }}" alt="Crack overlay"><figcaption><span>FIG. 02</span> Detected cracks <b class="red-key">■</b> with centreline <b class="gold-key">■</b></figcaption></figure>
+</div>
+
+<div class="metrics m4">
+<article><span>SEVERITY</span><strong>{{ result.severity }}</strong><small>from max crack width</small></article>
+<article><span>CONDITION SCORE</span><strong>{{ result.condition_score }}/100</strong><small>heuristic, higher is better</small></article>
+<article><span>TOTAL CRACK LENGTH</span><strong>{% if result.length_mm %}{{ result.length_mm }} mm{% else %}{{ result.length_px }} px{% endif %}</strong><small>{{ result.components }} separate crack(s)</small></article>
+<article><span>MAX / MEAN WIDTH</span><strong>{{ result.max_width }} / {{ result.mean_width }} {{ u }}</strong><small>{% if result.mm_per_px %}scaled from your photo width{% else %}pixels. Add photo width for mm{% endif %}</small></article>
+<article><span>CRACKED AREA</span><strong>{{ result.crack_area_pct }}%</strong><small>of the image</small></article>
+<article><span>BRANCH POINTS</span><strong>{{ result.branch_points }}</strong><small>more branching = more complex cracking</small></article>
+<article><span>RE-INSPECT WITHIN</span><strong>{% if result.reinspect_months %}{{ result.reinspect_months }} month{{ '' if result.reinspect_months == 1 else 's' }}{% else %}—{% endif %}</strong><small>{% if result.reinspect_months %}indicative interval, not a lifespan{% else %}shown only with a trained model{% endif %}</small></article>
+<article><span>METHOD</span><strong class="small-strong">{{ result.method }}</strong><small>{% if result.preliminary %}no trained weights loaded{% elif result.model_confidence %}mean confidence {{ result.model_confidence }}%{% else %}trained weights loaded{% endif %}</small></article>
+</div>
+
+{% if result.crack_found %}
+<div class="charts">
+<div class="chart-card"><h3>Condition score</h3><canvas id="gauge"></canvas></div>
+<div class="chart-card"><h3>Crack width distribution ({{ u }})</h3><canvas id="widths"></canvas></div>
+<div class="chart-card"><h3>Crack direction (% of length)</h3><canvas id="orient"></canvas></div>
+</div>
+{% endif %}
+
+<div class="chart-card wide"><h3>Crack growth projection</h3>
+{% if projection %}
+<canvas id="proj"></canvas>
+<p class="chart-note">Straight-line fit through {{ projection.n }} photos of this site since {{ projection.start }}. Growth rate: <b>{{ projection.slope_per_month }} {{ projection.unit }}/month</b>.
+{% if projection.double_in_months %}At this rate the crack length grows by another 100% in about <b>{{ projection.double_in_months }} months</b>.{% endif %}
+{% if not projection.reliable %} Only {{ projection.n }} photos so far, so treat this as rough. 4+ is better.{% endif %}
+Assumes the same framing each time. Real crack growth is not always linear (seasons, moisture, load), so this is a trend, not a prediction of remaining life.</p>
+{% else %}<p class="chart-note">{{ projection_note }}</p>{% endif %}
+</div>
+
+<div class="interpretation"><div><p class="eyebrow">READ THIS BEFORE INTERPRETING</p><h2>A screening aid,<br>not a safety verdict.</h2></div>
+<p>The score, tier and interval come from simple rules on crack width, density and branching. They do not know the material, load, foundation or moisture, so they cannot tell you how many years a structure has left. Carvings, jali, joints and shadows can still be mistaken for cracks. Check the overlay against the photo and ask a conservation or structural professional about anything suspected.</p></div>
+<div class="report-actions"><a class="button" href="{{ url_for('index') }}">Screen another image <span>↗</span></a><a class="text-link" href="{{ url_for('history') }}">View field log →</a></div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const R = {{ result | tojson }}, P = {{ projection | tojson }};
+const red = '#a84735', blue = '#536b76', sand = '#e8dece';
+if (R.crack_found) {
+  const col = R.condition_score >= 80 ? '#5b8a5b' : R.condition_score >= 60 ? '#c9a227' : R.condition_score >= 40 ? '#d9822b' : red;
+  new Chart('gauge', {type:'doughnut', data:{labels:['Score','Lost'], datasets:[{data:[R.condition_score,100-R.condition_score], backgroundColor:[col,sand], borderWidth:0}]},
+    options:{cutout:'72%', rotation:-90, circumference:180, plugins:{legend:{display:false}, tooltip:{enabled:false}}}});
+  new Chart('widths', {type:'bar', data:{labels:R.width_hist.labels, datasets:[{data:R.width_hist.counts, backgroundColor:red}]},
+    options:{plugins:{legend:{display:false}}, scales:{y:{title:{display:true,text:'centreline pixels'}}}}});
+  const o = R.orientation;
+  new Chart('orient', {type:'bar', data:{labels:Object.keys(o), datasets:[{data:Object.values(o), backgroundColor:blue}]},
+    options:{indexAxis:'y', plugins:{legend:{display:false}}, scales:{x:{max:100}}}});
+}
+if (P) {
+  const toLabel = d => { const t = new Date(P.start); t.setDate(t.getDate()+Math.round(d)); return t.toISOString().slice(0,10); };
+  const labels = [...P.fit_days, ...P.proj_days.slice(1)];
+  const measured = [...P.fit_vals, ...P.proj_days.slice(1).map(()=>null)];
+  const proj = [...P.fit_days.map(()=>null).slice(0,-1), P.fit_vals[P.fit_vals.length-1], ...P.proj_vals.slice(1)];
+  new Chart('proj', {type:'line', data:{labels:labels.map(toLabel), datasets:[
+    {label:'Measured ('+P.unit+')', data:measured, borderColor:red, backgroundColor:red, pointRadius:5, spanGaps:false},
+    {label:'Projected trend', data:proj, borderColor:blue, borderDash:[6,6], pointRadius:0}]},
+    options:{scales:{y:{title:{display:true,text:'total crack length ('+P.unit+')'}}}}});
+}
+</script>
+{% endblock %}

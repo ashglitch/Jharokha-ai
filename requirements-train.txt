@@ -1,0 +1,5 @@
+# Only needed to TRAIN or run a trained model. Install after requirements.txt.
+# CPU-only PyTorch is fine for resnet18 on small datasets.
+torch>=2.1
+torchvision>=0.16
+segmentation-models-pytorch>=0.3.3

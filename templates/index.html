@@ -1,0 +1,22 @@
+{% extends 'base.html' %}{% block title %}Screen a surface{% endblock %}
+{% block content %}
+<section class="hero wrap">
+  <div class="hero-copy"><p class="eyebrow">01 / OBSERVE BEFORE YOU INTERPRET</p><h1>Can we tell<br>damage from <em>decoration?</em></h1><p class="lede">An experimental vision tool for heritage surfaces—where carved stone, jali patterns, mortar lines and weathering can look a lot like cracks.</p><div class="hero-tags"><span>01 · Image-based</span><span>02 · Measured, not guessed</span><span>03 · Human in the loop</span></div></div>
+  <div class="arch-art" aria-label="Abstract line illustration inspired by a Rajasthani jharokha window"><div class="arch arch-one"><div class="arch arch-two"><div class="arch-inner"><span>J</span></div></div></div><div class="art-caption">ARCHIVE STUDY / 26°N 75°E</div></div>
+</section>
+<section class="workbench wrap"><div class="section-heading"><div><p class="eyebrow">02 / START A FIELD NOTE</p><h2>Screen a photograph</h2></div><p>Best with a clear, well-lit close-up of a wall or stone surface.</p></div>
+<form class="upload-card" action="{{ url_for('analyze') }}" method="post" enctype="multipart/form-data">
+  <label class="dropzone" for="image"><span class="upload-icon">↥</span><strong id="file-title">Choose a surface photograph</strong><span id="file-subtitle">JPG, PNG or WEBP · max 8 MB</span><input id="image" name="image" type="file" accept="image/png,image/jpeg,image/webp" required><span class="browse-btn">Browse files</span></label>
+  <div class="form-fields"><label>Site / building label <input type="text" name="building_label" placeholder="e.g. old-city haveli courtyard"></label><label>Surface type <select name="surface_type"><option>Unknown / not sure</option><option>Carved sandstone</option><option>Jali / ornamental stone</option><option>Plastered wall</option><option>Brick or masonry</option><option>Painted surface</option><option>Other</option></select></label><label>Real width of the photographed area (cm, optional) <input type="number" name="width_cm" min="1" max="5000" step="any" placeholder="e.g. 60 — gives crack size in mm"></label><label>Date photo was taken <input type="date" name="capture_date"></label></div>
+  <div class="form-bottom"><p><strong>What happens?</strong> The tool segments crack-like lines, measures them, and gives a screening score. Add the real width of the photo to get sizes in mm, and re-upload the same spot over time to get a growth projection.</p><button class="button" type="submit">Run visual screening <span>↗</span></button></div>
+</form></section>
+<section class="principles wrap"><article><span class="principle-num">A /</span><h3>Heritage-aware by design</h3><p>Ornament and carved details are known sources of false positives—not proof of damage.</p></article><article><span class="principle-num">B /</span><h3>Show the evidence</h3><p>The overlay lets a reviewer inspect what the simple edge detector responded to.</p></article><article><span class="principle-num">C /</span><h3>Keep uncertainty visible</h3><p>Every output asks for human review instead of pretending to certify structural safety.</p></article></section>
+<script>
+const input = document.getElementById('image');
+input.addEventListener('change', () => {
+  const file = input.files[0];
+  document.getElementById('file-title').textContent = file ? file.name : 'Choose a surface photograph';
+  document.getElementById('file-subtitle').textContent = file ? `${(file.size / 1024 / 1024).toFixed(2)} MB · ready to screen` : 'JPG, PNG or WEBP · max 8 MB';
+});
+</script>
+{% endblock %}
