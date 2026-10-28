@@ -1,5 +1,5 @@
 # JHAROKHA-AI — Heritage Surface Screening Prototype
-
+https://jharokha-ai.onrender.com
 **Question:** Can a computer-vision workflow make candidate lines visible on heritage surfaces while being honest about the risk of confusing damage with decoration?
 
 JHAROKHA-AI is a Flask + OpenCV student research prototype. It accepts a surface photograph, runs a simple edge-detection pipeline, overlays candidate edges, and records a local field log.
