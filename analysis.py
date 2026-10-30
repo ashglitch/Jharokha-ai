@@ -83,16 +83,27 @@ def _starts(n, tile, step):
     return s
 
 
-def _net_prob_tiled(net, bgr, tile=1024, overlap=96):
-    """Run big (zoomed) images in tiles so memory stays small; overlaps are merged with max()."""
+def _tile_grid(h, w, tile=1024, overlap=96):
+    step = tile - overlap
+    return len(_starts(h, tile, step)), len(_starts(w, tile, step))
+
+
+def _net_prob_tiled(net, bgr, tile=1024, overlap=96, cb=None):
+    """Run big (zoomed) images in tiles so memory stays small; overlaps are merged with max().
+    cb(done, total) is called after each tile (row by row)."""
     h, w = bgr.shape[:2]
     out = np.zeros((h, w), np.float32)
     step = tile - overlap
-    for y0 in _starts(h, tile, step):
-        for x0 in _starts(w, tile, step):
+    ys, xs = _starts(h, tile, step), _starts(w, tile, step)
+    total, done = len(ys) * len(xs), 0
+    for y0 in ys:
+        for x0 in xs:
             p = _net_prob(net, bgr[y0:y0 + tile, x0:x0 + tile], False)
             ph, pw = p.shape
             out[y0:y0 + ph, x0:x0 + pw] = np.maximum(out[y0:y0 + ph, x0:x0 + pw], p)
+            done += 1
+            if cb:
+                cb(done, total)
     return out
 
 
@@ -120,14 +131,31 @@ def model_probs(bgr):
     return out
 
 
-def _segment_model(bgr, net):
-    def run(im, base):
-        if TILE:
-            return _net_prob_tiled(net, im, tile=TILE)
-        return _net_prob(net, im, USE_TTA) if base else _net_prob_tiled(net, im)
-    prob = multiscale_prob(run, bgr)
-    mask = prob > _model['thr']
-    return _clean(mask, min_len=15, max_thickness=40), float(prob[mask].mean()) if mask.any() else 0.0
+SKIP_ZOOM_AT = 300  # if the normal-size pass already finds this many px of crack line, the slow zoom pass is skipped
+
+
+def _segment_model(bgr, net, progress=None):
+    P = progress or (lambda *a, **k: None)
+    thr = _model['thr']
+    h, w = bgr.shape[:2]
+    P('detect', 0.0)
+    best = _net_prob_tiled(net, bgr, tile=TILE) if TILE else _net_prob(net, bgr, USE_TTA)
+    P('detect', 1.0)
+    first = _clean(best > thr, min_len=30, max_thickness=40)
+    if (int(skeletonize(first).sum()) if first.any() else 0) >= SKIP_ZOOM_AT:
+        P('zoom_skipped', 1.0)  # obvious cracks already found: no need for the slow pass
+    else:
+        for sc in SCALES:
+            if sc == 1.0:
+                continue
+            im = cv2.resize(bgr, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
+            tl = TILE or 1024
+            rows, cols = _tile_grid(im.shape[0], im.shape[1], tile=tl)
+            P('zoom', 0.0, rows=rows, cols=cols, done=0, total=rows * cols)
+            pz = _net_prob_tiled(net, im, tile=tl, cb=lambda d, t: P('zoom', d / t, rows=rows, cols=cols, done=d, total=t))
+            best = np.maximum(best, cv2.resize(pz, (w, h), interpolation=cv2.INTER_AREA))
+    mask = _clean(best > thr, min_len=30, max_thickness=40)
+    return mask, float(best[mask].mean()) if mask.any() else 0.0
 
 
 def _clean(mask, min_len=50, max_thickness=14):
@@ -157,12 +185,16 @@ def _segment_baseline(bgr):
     return _clean((blackhat >= 35) & (r8 > thr), min_len=60, max_thickness=9), None
 
 
-def segment(bgr):
+def segment(bgr, progress=None):
     net = _load_model()
     if net is not None:
-        mask, conf = _segment_model(bgr, net)
+        mask, conf = _segment_model(bgr, net, progress)
         return mask, 'Trained U-Net segmentation', conf
+    if progress:
+        progress('detect', 0.0)
     mask, conf = _segment_baseline(bgr)
+    if progress:
+        progress('detect', 1.0)
     return mask, 'Baseline ridge filter (no trained weights found)', conf
 
 
@@ -191,10 +223,15 @@ def _branch_points(skel):
     return int(np.count_nonzero(skel & (nb >= 3)))
 
 
-def measure(mask, mm_per_px=None):
+MIN_TOTAL_MODEL = 150  # px of centreline (at 1024 px scale) needed before the trained model's output counts as a crack
+MIN_TOTAL_BASELINE = 60
+
+
+def measure(mask, mm_per_px=None, min_total=MIN_TOTAL_BASELINE):
     h, w = mask.shape
-    if not mask.any() or np.count_nonzero(skeletonize(mask)) < 60:
-        return {'crack_found': False, 'level': 0, 'severity': LEVEL_NAMES[0],
+    sk_len = int(np.count_nonzero(skeletonize(mask))) if mask.any() else 0
+    if sk_len < min_total:
+        return {'crack_found': False, 'ignored_px': sk_len, 'level': 0, 'severity': LEVEL_NAMES[0],
                 'crack_area_pct': 0.0, 'length_px': 0, 'length_mm': None,
                 'mean_width': 0.0, 'max_width': 0.0, 'branch_points': 0,
                 'orientation': {'Horizontal': 0, 'Vertical': 0, 'Diagonal': 0},
@@ -231,7 +268,9 @@ def measure(mask, mm_per_px=None):
     }, skel
 
 
-def analyze_image(image_path, output_path, width_cm=None):
+def analyze_image(image_path, output_path, width_cm=None, progress=None):
+    P = progress or (lambda *a, **k: None)
+    P('prepare', 0.0)
     bgr = cv2.imread(str(image_path))
     if bgr is None:
         raise ValueError('The uploaded file could not be read as an image.')
@@ -241,13 +280,16 @@ def analyze_image(image_path, output_path, width_cm=None):
         bgr = cv2.resize(bgr, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
     h, w = bgr.shape[:2]
     mm_per_px = (width_cm * 10 / w) if width_cm else None
+    P('prepare', 1.0)
 
-    mask, method, conf = segment(bgr)
-    res = measure(mask, mm_per_px)
+    mask, method, conf = segment(bgr, progress)
+    P('measure', 0.0)
+    res = measure(mask, mm_per_px, MIN_TOTAL_BASELINE if conf is None else MIN_TOTAL_MODEL)
     skel = None
     if isinstance(res, tuple):
         res, skel = res
 
+    P('draw', 0.0)
     overlay = bgr.copy()
     overlay[mask] = (35, 65, 220)
     blended = cv2.addWeighted(bgr, 0.55, overlay, 0.45, 0)

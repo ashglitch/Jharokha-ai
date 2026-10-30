@@ -1,0 +1,115 @@
+{% extends 'base.html' %}{% block title %}Reading your photo{% endblock %}
+{% block content %}
+<section class="wrap loading">
+  <p class="eyebrow">ANALYSING / {{ job_id }}</p>
+  <h1>Reading your photo<span class="dots"></span></h1>
+  <p class="lede" id="caption">Getting started.</p>
+
+  <div class="load-grid">
+    <div class="scan-wrap">
+      <img id="photo" src="{{ url_for('static', filename=image) }}" alt="Your photo">
+      <div id="tiles" class="tiles"></div>
+      <div id="scanline" class="scanline"></div>
+    </div>
+
+    <div class="load-side">
+      <div class="bar"><div id="barfill" class="barfill"></div></div>
+      <div class="bar-meta"><span id="pct">0%</span><span id="elapsed">0 s</span></div>
+
+      <ol class="steps" id="steps">
+        <li data-s="prepare">Prepare the photo</li>
+        <li data-s="detect">First pass at normal size</li>
+        <li data-s="zoom">Zoom pass, 3x <small id="tilecount"></small></li>
+        <li data-s="measure">Measure length, width, direction</li>
+        <li data-s="draw">Draw the report</li>
+      </ol>
+
+      <div class="fact-card">
+        <h3>While you wait <span id="factn"></span></h3>
+        <p id="fact"></p>
+      </div>
+    </div>
+  </div>
+  <p id="err" class="chart-note" style="display:none;color:#a84735"></p>
+  <p class="chart-note">The zoom pass is the slow part. It is skipped automatically when cracks are already obvious.</p>
+</section>
+
+<script>
+const JOB = {{ job_id | tojson }};
+const CAPTIONS = {
+  queued: 'Waiting for another analysis to finish. You are next in line.',
+  prepare: 'Shrinking your photo to 1024 px so every photo is judged at the same size.',
+  detect: 'First pass: looking for obvious cracks at normal size.',
+  zoom: 'Second pass: zoomed in 3x. Thin cracks in wide shots only become visible when enlarged, so the AI scans the photo tile by tile.',
+  zoom_skipped: 'Cracks were already clear at normal size, so the slow zoom pass was skipped.',
+  measure: 'Measuring length, width, branching and direction from the crack centreline.',
+  draw: 'Drawing the overlay and building your charts.'
+};
+const ORDER = ['prepare', 'detect', 'zoom', 'measure', 'draw'];
+const FACTS = [
+  'A crack that is growing worries conservators more than a bigger crack that has not changed for years. That is why photographing the same spot again, months later, is so useful.',
+  'A jharokha is an overhanging, enclosed balcony, a signature of Rajasthani palaces and havelis. Their carved stone screens are full of thin dark lines, which is exactly what makes cracks hard to spot automatically.',
+  'Stair-step cracks that follow mortar lines in a brick or stone wall often point to movement in the wall or the ground beneath it.',
+  'A 0.3 mm crack is about as thick as three sheets of printer paper.',
+  'Traditional lime mortar is softer than the stone around it and lets a wall breathe. Hard cement mortar can trap moisture and push damage into the stone.',
+  'Side light makes cracks easier to photograph. Early morning or late afternoon light, coming across the wall, throws tiny shadows into every crack.',
+  'Carvings, jali and shadows are the biggest source of false alarms for crack detectors. That is why this tool always asks for a human check.',
+  'Your photo is shrunk to 1024 px before analysis. Then the AI looks again with the photo enlarged 3x, because thin cracks in a wide shot can be only 2 to 3 pixels wide.',
+  'Hairline cracks in plaster are often just the surface layer shrinking as it dries. Cracks that go through the whole wall, or that open and close with the seasons, deserve more attention.',
+  'For the most useful photo, fill the frame with 1 to 2 metres of wall and hold the phone square-on to the surface.'
+];
+let fi = Math.floor(Math.random() * FACTS.length);
+function showFact() {
+  document.getElementById('fact').textContent = FACTS[fi];
+  document.getElementById('factn').textContent = '(' + (fi + 1) + '/' + FACTS.length + ')';
+  fi = (fi + 1) % FACTS.length;
+}
+showFact(); setInterval(showFact, 8000);
+
+let gridKey = '';
+function buildGrid(rows, cols) {
+  const key = rows + 'x' + cols;
+  if (key === gridKey) return;
+  gridKey = key;
+  const t = document.getElementById('tiles');
+  t.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+  t.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
+  t.innerHTML = '';
+  for (let i = 0; i < rows * cols; i++) { const d = document.createElement('div'); t.appendChild(d); }
+}
+function paintTiles(done) {
+  const kids = document.getElementById('tiles').children;
+  for (let i = 0; i < kids.length; i++) kids[i].className = i < done ? 'done' : (i === done ? 'now' : '');
+}
+function markSteps(stage) {
+  const idx = stage === 'zoom_skipped' ? ORDER.indexOf('zoom') : ORDER.indexOf(stage);
+  document.querySelectorAll('#steps li').forEach(li => {
+    const k = ORDER.indexOf(li.dataset.s);
+    li.className = k < idx ? 'ok' : (k === idx ? 'now' : '');
+    if (stage === 'zoom_skipped' && li.dataset.s === 'zoom') li.className = 'skip';
+  });
+}
+async function poll() {
+  try {
+    const r = await fetch('/status/' + JOB, {cache: 'no-store'});
+    const j = await r.json();
+    if (j.status === 'error') {
+      const e = document.getElementById('err'); e.style.display = 'block';
+      e.innerHTML = (j.error || 'Something went wrong.') + ' <a href="/">Back to upload</a>';
+      document.getElementById('scanline').style.display = 'none';
+      return;
+    }
+    document.getElementById('caption').textContent = CAPTIONS[j.stage] || 'Working.';
+    document.getElementById('barfill').style.width = (j.pct || 0) + '%';
+    document.getElementById('pct').textContent = Math.round(j.pct || 0) + '%';
+    document.getElementById('elapsed').textContent = Math.round(j.elapsed || 0) + ' s';
+    markSteps(j.stage);
+    if (j.rows) { buildGrid(j.rows, j.cols); paintTiles(j.done || 0); document.getElementById('tilecount').textContent = '(' + (j.done || 0) + '/' + j.total + ')'; }
+    document.getElementById('scanline').style.display = (j.stage === 'zoom' || j.stage === 'detect') ? 'block' : 'none';
+    if (j.status === 'done') { location.href = '/result/' + j.result_id; return; }
+  } catch (e) { /* server busy, try again */ }
+  setTimeout(poll, 1200);
+}
+poll();
+</script>
+{% endblock %}

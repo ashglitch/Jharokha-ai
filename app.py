@@ -1,11 +1,14 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from pathlib import Path
 from datetime import datetime
 from werkzeug.utils import secure_filename
 import cv2
 import json
 import os
+import threading
+import time
 import uuid
+from collections import OrderedDict
 from analysis import analyze_image, project_growth
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -15,6 +18,12 @@ HISTORY_FILE = BASE_DIR / 'history.json'
 PUBLIC = os.environ.get('JHAROKHA_PUBLIC') == '1'  # online demo: never store or show other people's photos
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+JOBS = OrderedDict()      # record_id -> progress info (shown on the loading page)
+RESULTS = OrderedDict()   # record_id -> (record, projection, note) kept in memory
+ANALYSIS_LOCK = threading.Lock()  # one analysis at a time keeps memory use low
+STAGE_SPAN = {'prepare': (0, 4), 'detect': (4, 25), 'zoom': (25, 90), 'zoom_skipped': (90, 90),
+              'measure': (90, 96), 'draw': (96, 99)}
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
@@ -104,32 +113,62 @@ def analyze():
     output_path = RESULT_DIR / output_name
     uploaded.save(input_path)
 
-    try:
-        metrics = analyze_image(input_path, output_path, width_cm)
-    except (ValueError, cv2.error) as exc:
-        input_path.unlink(missing_ok=True)
-        flash(f'Could not analyze this image: {exc}', 'error')
-        return redirect(url_for('index'))
+    JOBS[record_id] = {'status': 'queued', 'stage': 'queued', 'pct': 0, 'started': time.time()}
+    while len(JOBS) > 100:
+        JOBS.popitem(last=False)
+    meta = {'building_label': building_label, 'surface_type': surface_type, 'capture_date': capture_date,
+            'input_name': input_name, 'output_name': output_name}
+    threading.Thread(target=run_job, args=(record_id, input_path, output_path, width_cm, meta), daemon=True).start()
+    return render_template('loading.html', job_id=record_id, image=f'uploads/{input_name}')
 
-    record = {
-        'id': record_id,
-        'created_at': datetime.now().strftime('%d %b %Y, %I:%M %p'),
-        'building_label': building_label or 'Unlabelled site',
-        'surface_type': surface_type,
-        'capture_date': capture_date,
-        'original_image': f'uploads/{input_name}',
-        'overlay_image': f'results/{output_name}',
-        **metrics,
-    }
-    history = read_history()
-    projection, projection_note = build_projection(record, history)
-    history.insert(0, record)
-    save_history(history)
-    return render_template('result.html', result=record, projection=projection, projection_note=projection_note)
+
+def run_job(record_id, input_path, output_path, width_cm, meta):
+    job = JOBS[record_id]
+
+    def progress(stage, frac=None, **extra):
+        lo, hi = STAGE_SPAN.get(stage, (0, 0))
+        job.update(stage=stage, status='running', pct=round(lo + (hi - lo) * (frac or 0), 1), **extra)
+
+    try:
+        with ANALYSIS_LOCK:
+            job.update(status='running', stage='prepare', pct=0)
+            metrics = analyze_image(input_path, output_path, width_cm, progress)
+        record = {
+            'id': record_id,
+            'created_at': datetime.now().strftime('%d %b %Y, %I:%M %p'),
+            'building_label': meta['building_label'] or 'Unlabelled site',
+            'surface_type': meta['surface_type'],
+            'capture_date': meta['capture_date'],
+            'original_image': f"uploads/{meta['input_name']}",
+            'overlay_image': f"results/{meta['output_name']}",
+            **metrics,
+        }
+        history = read_history()
+        projection, note = build_projection(record, history)
+        history.insert(0, record)
+        save_history(history)
+        RESULTS[record_id] = (record, projection, note)
+        while len(RESULTS) > 100:
+            RESULTS.popitem(last=False)
+        job.update(status='done', stage='done', pct=100, result_id=record_id)
+    except Exception as exc:  # shown on the loading page instead of failing silently
+        input_path.unlink(missing_ok=True)
+        job.update(status='error', error=f'Could not analyze this image: {exc}')
+
+
+@app.route('/status/<record_id>')
+def status(record_id):
+    job = JOBS.get(record_id)
+    if job is None:
+        return jsonify({'status': 'error', 'error': 'This analysis was not found (the server may have restarted). Please upload again.'})
+    return jsonify({**job, 'elapsed': round(time.time() - job['started'], 1)})
 
 
 @app.route('/result/<record_id>')
 def view_result(record_id):
+    if record_id in RESULTS:
+        record, projection, note = RESULTS[record_id]
+        return render_template('result.html', result=record, projection=projection, projection_note=note)
     history = read_history()
     record = next((r for r in history if r['id'] == record_id), None)
     if record is None:
