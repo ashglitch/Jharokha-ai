@@ -16,3 +16,5 @@ my_photos/no_cracks/*
 !my_photos/no_cracks/PUT_CRACK_FREE_PHOTOS_HERE.txt
 diagnose_out/
 prelabel/
+
+jobs/

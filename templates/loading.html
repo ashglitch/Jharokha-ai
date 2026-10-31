@@ -67,6 +67,7 @@ function showFact() {
 showFact(); setInterval(showFact, 8000);
 
 let gridKey = '';
+let notFound = 0;
 function buildGrid(rows, cols) {
   const key = rows + 'x' + cols;
   if (key === gridKey) return;
@@ -93,6 +94,8 @@ async function poll() {
   try {
     const r = await fetch('/status/' + JOB, {cache: 'no-store'});
     const j = await r.json();
+    if (j.status === 'retry') { setTimeout(poll, 800); return; }
+    if (j.status === 'error' && j.error && j.error.indexOf('not found') >= 0 && ++notFound < 6) { setTimeout(poll, 1000); return; }
     if (j.status === 'error') {
       const e = document.getElementById('err'); e.style.display = 'block';
       e.innerHTML = (j.error || 'Something went wrong.') + ' <a href="/">Back to upload</a>';

@@ -115,6 +115,15 @@ def _pick_crop(img, msk, crop, rng, bias=0.7):
         msk = cv2.copyMakeBorder(msk, 0, ph, 0, pw, cv2.BORDER_CONSTANT, value=0)
         h, w = msk.shape
     ys, xs = np.nonzero(msk)
+    if not len(ys) and rng.random() < 0.8:
+        # crack-free photo: aim the crop at BUSY regions (carvings, plants, edges), because that is
+        # where false alarms happen. Picking random edge pixels favours the busiest areas.
+        ey, ex = np.nonzero(cv2.Canny(cv2.cvtColor(img, cv2.COLOR_RGB2GRAY), 80, 160))
+        if len(ey):
+            i = rng.randrange(len(ey))
+            y0 = int(np.clip(ey[i] - crop // 2 + rng.randint(-crop // 4, crop // 4), 0, h - crop))
+            x0 = int(np.clip(ex[i] - crop // 2 + rng.randint(-crop // 4, crop // 4), 0, w - crop))
+            return img[y0:y0 + crop, x0:x0 + crop], msk[y0:y0 + crop, x0:x0 + crop]
     if len(ys) and rng.random() < bias:  # centre near a crack most of the time, anywhere otherwise
         i = rng.randrange(len(ys))
         j = max(1, crop // 3)

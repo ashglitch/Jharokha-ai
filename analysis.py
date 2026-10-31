@@ -252,6 +252,8 @@ def measure(mask, mm_per_px=None, min_total=MIN_TOTAL_BASELINE):
     penalty = (LEVEL_PENALTY[level] + min(25, area_pct * 5) + min(20, branches * 2))
     score = int(round(max(0, 100 - penalty)))
     tier, months = next((t, m) for lo, t, m in TIERS if score >= lo)
+    lab, npieces = ndimage.label(skel, structure=np.ones((3, 3)))
+    piece_lens = np.bincount(lab.ravel())[1:] if npieces else np.array([0])
     edges = np.linspace(0, max(widths.max(), 1e-6), 7)
     counts, _ = np.histogram(widths, bins=edges)
     labels = [f'{edges[i]:.1f}-{edges[i + 1]:.1f}' for i in range(6)]
@@ -261,6 +263,7 @@ def measure(mask, mm_per_px=None, min_total=MIN_TOTAL_BASELINE):
         'length_mm': round(length_px * mm_per_px, 1) if mm_per_px else None,
         'mean_width': round(mean_w, 2), 'max_width': round(max_w, 2),
         'branch_points': branches, 'orientation': _orientation_split(skel),
+        'pieces': int(npieces), 'median_piece_px': int(np.median(piece_lens)), 'longest_piece_px': int(piece_lens.max()),
         'width_hist': {'labels': labels, 'counts': [int(c) for c in counts]},
         'unit': 'mm' if mm_per_px else 'px', 'condition_score': score,
         'risk_tier': tier, 'reinspect_months': months,
@@ -299,6 +302,11 @@ def analyze_image(image_path, output_path, width_cm=None, progress=None):
 
     res['preliminary'] = conf is None and 'Baseline' in method
     res['hint_lines'] = 0
+    # many short scattered marks and no long crack = typical of carvings, plants and shadows, not of real cracking
+    res['unreliable'] = bool(res.get('crack_found') and not res['preliminary'] and res.get('pieces', 0) >= 5
+                             and res.get('median_piece_px', 999) < 100 and res.get('longest_piece_px', 999) < 250)
+    if res['unreliable']:
+        res['risk_tier'], res['reinspect_months'] = 'Unclear', None
     if not res['preliminary'] and not res['crack_found']:
         # trained model saw nothing: cross-check with the simple line detector so a miss is not silent
         bm, _ = _segment_baseline(bgr)

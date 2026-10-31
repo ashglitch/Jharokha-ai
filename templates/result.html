@@ -4,10 +4,12 @@
 <section class="report wrap">
 <p class="eyebrow">FIELD REPORT / {{ result.id }} · {{ result.capture_date or result.created_at }}</p>
 <div class="report-head"><div><h1>Look closely.<br><em>Then decide.</em></h1><p class="lede">{{ result.building_label }} · {{ result.surface_type }}</p></div>
-<div class="review-badge"><span class="badge-dot"></span>{% if result.preliminary %}Preliminary result · no trained model{% else %}{{ result.risk_tier }} risk tier · human review recommended{% endif %}</div></div>
+<div class="review-badge"><span class="badge-dot"></span>{% if result.unreliable %}Unreliable result · likely ornament or shadows{% elif result.preliminary %}Preliminary result · no trained model{% else %}{{ result.risk_tier }} risk tier · human review recommended{% endif %}</div></div>
 
 {% if result.preliminary %}<div class="chart-card wide" style="border-color:#a84735"><h3>Untrained baseline mode</h3><p class="chart-note" style="margin:0">No trained model is loaded, so this uses a simple line detector. It can mistake carved panel lines, joints and shadows for cracks, and the score, tier and interval are suppressed for that reason. Check the overlay by eye. Train the model (README) for reliable results.</p></div>{% endif %}
+{% if result.unreliable %}<div class="chart-card wide" style="border-color:#a84735"><h3>Probably false alarms</h3><p class="chart-note" style="margin:0">The model marked {{ result.pieces }} short pieces scattered around the photo and no long crack. That pattern usually comes from carvings, plants, edges or shadows, not from real cracking, so no severity or score is given. Look at the photo yourself. If you know this surface has no cracks, adding it to <b>my_photos\no_cracks</b> and retraining teaches the model not to repeat it.</p></div>{% endif %}
 {% if result.hint_lines and result.hint_lines >= 250 %}<div class="chart-card wide" style="border-color:#a84735"><h3>Possible missed cracks</h3><p class="chart-note" style="margin:0">The trained model found no cracks, but a simple line detector found about {{ result.hint_lines }} px of crack-like lines. The model may be missing thin or distant cracks. Look at the photo yourself, and try a closer photo of the area (fill the frame with 1-2 m of wall).</p></div>{% endif %}
+{% if result.ignored_px and not result.crack_found and not result.preliminary %}<div class="chart-card wide"><h3>Small marks ignored</h3><p class="chart-note" style="margin:0">The model marked about {{ result.ignored_px }} px of tiny fragments. That is too short to call a crack, so it was not counted. Check the photo if you are unsure.</p></div>{% endif %}
 {% if result.hint_lines is defined and not result.crack_found and not result.preliminary and (not result.hint_lines or result.hint_lines < 250) %}<div class="chart-card wide"><h3>No cracks detected</h3><p class="chart-note" style="margin:0">Very thin or distant cracks can still be missed in wide shots. For a real inspection, photograph suspicious areas close up.</p></div>{% endif %}
 {% if not result.preliminary and result.crack_area_pct > 4 %}<div class="chart-card wide" style="border-color:#c9a227"><h3>Check this one</h3><p class="chart-note" style="margin:0">An unusually large share of the image was marked as cracked ({{ result.crack_area_pct }}%). That often means ornament or shadows are being flagged. Review the overlay before trusting the numbers.</p></div>{% endif %}
 <div class="image-grid">
@@ -16,17 +18,17 @@
 </div>
 
 <div class="metrics m4">
-<article><span>SEVERITY</span><strong>{{ result.severity }}</strong><small>from max crack width</small></article>
-<article><span>CONDITION SCORE</span><strong>{{ result.condition_score }}/100</strong><small>heuristic, higher is better</small></article>
+<article><span>SEVERITY</span><strong>{% if result.unreliable %}Unclear{% else %}{{ result.severity }}{% endif %}</strong><small>{% if result.unreliable %}many short scattered marks{% else %}from max crack width{% endif %}</small></article>
+<article><span>CONDITION SCORE</span><strong>{% if result.unreliable %}—{% else %}{{ result.condition_score }}/100{% endif %}</strong><small>heuristic, higher is better</small></article>
 <article><span>TOTAL CRACK LENGTH</span><strong>{% if result.length_mm %}{{ result.length_mm }} mm{% else %}{{ result.length_px }} px{% endif %}</strong><small>{{ result.components }} separate crack(s)</small></article>
 <article><span>MAX / MEAN WIDTH</span><strong>{{ result.max_width }} / {{ result.mean_width }} {{ u }}</strong><small>{% if result.mm_per_px %}scaled from your photo width{% else %}pixels. Add photo width for mm{% endif %}</small></article>
 <article><span>CRACKED AREA</span><strong>{{ result.crack_area_pct }}%</strong><small>of the image</small></article>
 <article><span>BRANCH POINTS</span><strong>{{ result.branch_points }}</strong><small>more branching = more complex cracking</small></article>
-<article><span>RE-INSPECT WITHIN</span><strong>{% if result.reinspect_months %}{{ result.reinspect_months }} month{{ '' if result.reinspect_months == 1 else 's' }}{% else %}—{% endif %}</strong><small>{% if result.reinspect_months %}indicative interval, not a lifespan{% else %}shown only with a trained model{% endif %}</small></article>
+<article><span>RE-INSPECT WITHIN</span><strong>{% if result.reinspect_months and not result.unreliable %}{{ result.reinspect_months }} month{{ '' if result.reinspect_months == 1 else 's' }}{% else %}—{% endif %}</strong><small>{% if result.reinspect_months %}indicative interval, not a lifespan{% else %}shown only with a trained model{% endif %}</small></article>
 <article><span>METHOD</span><strong class="small-strong">{{ result.method }}</strong><small>{% if result.preliminary %}no trained weights loaded{% elif result.model_confidence %}mean confidence {{ result.model_confidence }}%{% else %}trained weights loaded{% endif %}</small></article>
 </div>
 
-{% if result.crack_found %}
+{% if result.crack_found and not result.unreliable %}
 <div class="charts">
 <div class="chart-card"><h3>Condition score</h3><canvas id="gauge"></canvas></div>
 <div class="chart-card"><h3>Crack width distribution ({{ u }})</h3><canvas id="widths"></canvas></div>
@@ -53,7 +55,7 @@ Assumes the same framing each time. Real crack growth is not always linear (seas
 <script>
 const R = {{ result | tojson }}, P = {{ projection | tojson }};
 const red = '#a84735', blue = '#536b76', sand = '#e8dece';
-if (R.crack_found) {
+if (R.crack_found && !R.unreliable) {
   const col = R.condition_score >= 80 ? '#5b8a5b' : R.condition_score >= 60 ? '#c9a227' : R.condition_score >= 40 ? '#d9822b' : red;
   new Chart('gauge', {type:'doughnut', data:{labels:['Score','Lost'], datasets:[{data:[R.condition_score,100-R.condition_score], backgroundColor:[col,sand], borderWidth:0}]},
     options:{cutout:'72%', rotation:-90, circumference:180, plugins:{legend:{display:false}, tooltip:{enabled:false}}}});

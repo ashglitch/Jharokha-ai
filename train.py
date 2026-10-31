@@ -95,6 +95,7 @@ def main():
     ap.add_argument('--lr', type=float, default=5e-4)
     ap.add_argument('--encoder', default='resnet34', help='resnet18 is faster on CPU')
     ap.add_argument('--own-boost', type=int, default=3, help='repeat your heritage images this many times')
+    ap.add_argument('--neg-boost', type=int, default=10, help='repeat your CRACK-FREE photos this many times (teaches ornament is not damage)')
     ap.add_argument('--patience', type=int, default=12)
     ap.add_argument('--workers', type=int, default=0)
     ap.add_argument('--limit', type=int, default=0, help='use only N pairs (smoke test)')
@@ -117,8 +118,11 @@ def main():
     va = [x for x in (cd.load(p) for p in va_pairs) if x is not None] or [x for x, _ in tr[:max(4, len(tr) // 5)]]
     train_items = []
     for x, pub in tr:
-        train_items += [x] * (1 if pub else a.own_boost)
-    print(f'{len(tr)} train images ({len(train_items)} after oversampling) | {len(va)} validation images')
+        train_items += [x] * (1 if pub else (a.neg_boost if not x[1].any() else a.own_boost))
+    n_neg = sum(1 for x, pub in tr if not pub and not x[1].any())
+    print(f'{len(tr)} train images ({len(train_items)} after oversampling) | {len(va)} validation images | your crack-free photos in training: {n_neg}')
+    if n_neg == 0:
+        print('WARNING: no crack-free photos of your own found. Put photos in my_photos/no_cracks and run: python prepare_data.py mine')
 
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     print('device:', dev, '| encoder:', a.encoder)

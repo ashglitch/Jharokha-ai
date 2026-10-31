@@ -19,7 +19,8 @@ PUBLIC = os.environ.get('JHAROKHA_PUBLIC') == '1'  # online demo: never store or
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
-JOBS = OrderedDict()      # record_id -> progress info (shown on the loading page)
+JOBS_DIR = BASE_DIR / 'jobs'  # job progress lives on disk, so any copy of the server can answer /status
+JOBS_DIR.mkdir(exist_ok=True)
 RESULTS = OrderedDict()   # record_id -> (record, projection, note) kept in memory
 ANALYSIS_LOCK = threading.Lock()  # one analysis at a time keeps memory use low
 STAGE_SPAN = {'prepare': (0, 4), 'detect': (4, 25), 'zoom': (25, 90), 'zoom_skipped': (90, 90),
@@ -77,6 +78,36 @@ def build_projection(record, history):
     return proj, None
 
 
+
+def job_write(record_id, state):
+    tmp = JOBS_DIR / f'{record_id}.tmp'
+    tmp.write_text(json.dumps(state), encoding='utf-8')
+    for _ in range(5):  # Windows can briefly lock the target while someone reads it
+        try:
+            os.replace(tmp, JOBS_DIR / f'{record_id}.json')
+            return
+        except PermissionError:
+            time.sleep(0.05)
+
+
+def job_read(record_id):
+    path = JOBS_DIR / f'{record_id}.json'
+    if not path.exists():
+        return None
+    for _ in range(5):
+        try:
+            return json.loads(path.read_text(encoding='utf-8'))
+        except (ValueError, PermissionError, OSError):
+            time.sleep(0.05)
+    return {'status': 'retry'}
+
+
+def job_cleanup(keep=100):
+    files = sorted(JOBS_DIR.glob('*.json'), key=lambda p: p.stat().st_mtime)
+    for p in files[:-keep]:
+        p.unlink(missing_ok=True)
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -113,9 +144,8 @@ def analyze():
     output_path = RESULT_DIR / output_name
     uploaded.save(input_path)
 
-    JOBS[record_id] = {'status': 'queued', 'stage': 'queued', 'pct': 0, 'started': time.time()}
-    while len(JOBS) > 100:
-        JOBS.popitem(last=False)
+    job_write(record_id, {'status': 'queued', 'stage': 'queued', 'pct': 0, 'started': time.time()})
+    job_cleanup()
     meta = {'building_label': building_label, 'surface_type': surface_type, 'capture_date': capture_date,
             'input_name': input_name, 'output_name': output_name}
     threading.Thread(target=run_job, args=(record_id, input_path, output_path, width_cm, meta), daemon=True).start()
@@ -123,15 +153,19 @@ def analyze():
 
 
 def run_job(record_id, input_path, output_path, width_cm, meta):
-    job = JOBS[record_id]
+    job = job_read(record_id) or {'started': time.time()}
+
+    def update(**fields):
+        job.update(fields)
+        job_write(record_id, job)
 
     def progress(stage, frac=None, **extra):
         lo, hi = STAGE_SPAN.get(stage, (0, 0))
-        job.update(stage=stage, status='running', pct=round(lo + (hi - lo) * (frac or 0), 1), **extra)
+        update(stage=stage, status='running', pct=round(lo + (hi - lo) * (frac or 0), 1), **extra)
 
     try:
         with ANALYSIS_LOCK:
-            job.update(status='running', stage='prepare', pct=0)
+            update(status='running', stage='prepare', pct=0)
             metrics = analyze_image(input_path, output_path, width_cm, progress)
         record = {
             'id': record_id,
@@ -150,15 +184,15 @@ def run_job(record_id, input_path, output_path, width_cm, meta):
         RESULTS[record_id] = (record, projection, note)
         while len(RESULTS) > 100:
             RESULTS.popitem(last=False)
-        job.update(status='done', stage='done', pct=100, result_id=record_id)
+        update(status='done', stage='done', pct=100, result_id=record_id)
     except Exception as exc:  # shown on the loading page instead of failing silently
         input_path.unlink(missing_ok=True)
-        job.update(status='error', error=f'Could not analyze this image: {exc}')
+        update(status='error', error=f'Could not analyze this image: {exc}')
 
 
 @app.route('/status/<record_id>')
 def status(record_id):
-    job = JOBS.get(record_id)
+    job = job_read(record_id)
     if job is None:
         return jsonify({'status': 'error', 'error': 'This analysis was not found (the server may have restarted). Please upload again.'})
     return jsonify({**job, 'elapsed': round(time.time() - job['started'], 1)})
@@ -199,4 +233,5 @@ def too_large(_error):
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # use_reloader=False: the auto-restarter would kill an analysis in progress whenever any file changes
+    app.run(debug=True, use_reloader=False)
